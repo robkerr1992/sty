@@ -65,6 +65,15 @@ func TestConsumeAllWithPolicy(t *testing.T) {
 		})
 	}
 
+	t.Run("nil sink element panics", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("ConsumeAllWithPolicy() did not panic on nil sink")
+			}
+		}()
+		_ = ConsumeAll(ctx, []Sink[string]{nil}, "value")
+	})
+
 	t.Run("unknown policy is fail fast", func(t *testing.T) {
 		wantErr := errors.New("stop")
 		calls := 0
