@@ -28,6 +28,36 @@ func (l *memoryLedger) Begin(_ context.Context, key OperationKey, _ Metadata) (C
 func (*memoryLedger) Settle(context.Context, Claim, TerminalOutcome) error    { return nil }
 func (*memoryLedger) ReapStale(context.Context, time.Duration) (int64, error) { return 0, nil }
 
+type pullableMemoryLedger struct {
+	memoryLedger
+	claimNext Claim
+	nextErr   error
+}
+
+var _ PullableLedger = (*pullableMemoryLedger)(nil)
+
+func (l *pullableMemoryLedger) ClaimNext(context.Context, Metadata) (Claim, error) {
+	if l.nextErr != nil {
+		return Claim{}, l.nextErr
+	}
+	return l.claimNext, nil
+}
+
+func TestPullableLedgerClaimNext(t *testing.T) {
+	want := Claim{Key: "seed-2", Attempt: 2, Feedback: "revise"}
+	ledger := &pullableMemoryLedger{claimNext: want}
+	got, err := ledger.ClaimNext(context.Background(), nil)
+	if err != nil || got != want {
+		t.Fatalf("ClaimNext() = %#v, %v; want %#v, nil", got, err, want)
+	}
+}
+
+func TestErrNoPendingWorkWraps(t *testing.T) {
+	err := fmt.Errorf("memory ledger: %w", ErrNoPendingWork)
+	if !errors.Is(err, ErrNoPendingWork) {
+		t.Fatalf("errors.Is(%v, ErrNoPendingWork) = false", err)
+	}
+}
 func TestLedgerFreshClaim(t *testing.T) {
 	ledger := &memoryLedger{}
 	claim, err := ledger.Begin(context.Background(), "seed-1", nil)

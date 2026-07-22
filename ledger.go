@@ -15,14 +15,16 @@ type OperationKey string
 // consumer. Values are immutable by convention.
 type Metadata map[string]string
 
-// Claim is the rehydration handle returned by Begin. Attempt is 1 for a fresh
-// Phase 3 claim; redelivery and attempt increments belong to Phase 4.
+// Claim is the rehydration handle returned by Begin or ClaimNext.
 type Claim struct {
 	Key         OperationKey
 	OperationID string
 	Origin      string
 	StartedAt   time.Time
 	Attempt     int
+	// Feedback carries the prior attempt's redelivery note. It is empty on a
+	// fresh, first-ever claim.
+	Feedback string
 }
 
 // ErrAlreadyClaimed is returned, possibly wrapped, when a key has a claim
@@ -50,5 +52,12 @@ type Ledger interface {
 	ReapStale(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
-// Phase 4 is expected to add a PullableLedger interface embedding Ledger and
-// adding ClaimNext(ctx, meta). It is intentionally not implemented in Phase 3.
+// PullableLedger is the optional queue-like ledger capability used by Worker.
+type PullableLedger interface {
+	Ledger
+	ClaimNext(ctx context.Context, meta Metadata) (Claim, error)
+}
+
+// ErrNoPendingWork is returned, possibly wrapped, when ClaimNext finds no
+// claimable operation.
+var ErrNoPendingWork = errors.New("sty: no pending work")

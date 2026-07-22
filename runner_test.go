@@ -9,6 +9,47 @@ import (
 	"time"
 )
 
+type beginNextLedger struct {
+	recordingLedger
+	claim      Claim
+	err        error
+	claimCalls int
+}
+
+func (l *beginNextLedger) ClaimNext(context.Context, Metadata) (Claim, error) {
+	l.claimCalls++
+	return l.claim, l.err
+}
+
+func TestRunnerBeginNext(t *testing.T) {
+	want := Claim{Key: "next", Attempt: 2, Feedback: "revise"}
+	ledger := &beginNextLedger{claim: want}
+	runner := Runner{Ledger: ledger}
+	got, err := runner.BeginNext(context.Background(), Metadata{"origin": "worker"})
+	if err != nil || got != want {
+		t.Fatalf("BeginNext() = %#v, %v; want %#v, nil", got, err, want)
+	}
+}
+
+func TestRunnerBeginNextRejectsPlainLedger(t *testing.T) {
+	runner := Runner{Ledger: &recordingLedger{}}
+	_, err := runner.BeginNext(context.Background(), nil)
+	if !errors.Is(err, ErrNotPullable) {
+		t.Fatalf("BeginNext() error = %v, want ErrNotPullable", err)
+	}
+}
+
+func TestRunnerBeginNextValidatesBeforeClaiming(t *testing.T) {
+	ledger := &beginNextLedger{}
+	runner := Runner{
+		Ledger: ledger,
+		Plan:   Plan{Required: []string{"missing"}},
+	}
+	_, err := runner.BeginNext(context.Background(), nil)
+	if err == nil || ledger.claimCalls != 0 {
+		t.Fatalf("BeginNext() error/calls = %v/%d, want validation error and zero calls", err, ledger.claimCalls)
+	}
+}
 func TestRunnerBeginFailureSkipsExecuteAndSettle(t *testing.T) {
 	beginErr := errors.New("claim failed")
 	ledger := &recordingLedger{beginErr: beginErr}
@@ -26,6 +67,51 @@ func TestRunnerBeginFailureSkipsExecuteAndSettle(t *testing.T) {
 	}
 }
 
+func TestRunnerRetryableErrorFeedbackIsOrthogonalToStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ledger := &recordingLedger{}
+	runner := Runner{Ledger: ledger, Core: coreFunc(func(context.Context, *RunState) error {
+		return &RetryableError{Feedback: "try a smaller scope", Err: context.DeadlineExceeded}
+	})}
+	if err := runner.Run(ctx, "key", nil); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run() error = %v, want deadline exceeded", err)
+	}
+	outcome := ledger.outcomes[0]
+	if outcome.Status != TerminalRejected {
+		t.Fatalf("status = %s, want TerminalRejected when only execErr is deadline exceeded", outcome.Status)
+	}
+	if outcome.Feedback != "try a smaller scope" {
+		t.Fatalf("feedback = %q", outcome.Feedback)
+	}
+}
+
+func TestRunnerRetryableDeadlinePreservesTimedOutClassification(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	<-ctx.Done()
+	ledger := &recordingLedger{}
+	runner := Runner{Ledger: ledger, Core: coreFunc(func(context.Context, *RunState) error {
+		return &RetryableError{Feedback: "x", Err: context.DeadlineExceeded}
+	})}
+	_ = runner.Run(ctx, "key", nil)
+	outcome := ledger.outcomes[0]
+	if outcome.Status != TerminalTimedOut || outcome.Feedback != "x" {
+		t.Fatalf("outcome = %#v, want timed out with feedback", outcome)
+	}
+}
+
+func TestRunnerOrdinaryErrorHasNoFeedback(t *testing.T) {
+	ledger := &recordingLedger{}
+	runner := Runner{Ledger: ledger, Core: coreFunc(func(context.Context, *RunState) error {
+		return errors.New("boom")
+	})}
+	_ = runner.Run(context.Background(), "key", nil)
+	outcome := ledger.outcomes[0]
+	if outcome.Status != TerminalRejected || outcome.Feedback != "" {
+		t.Fatalf("outcome = %#v, want rejected with empty feedback", outcome)
+	}
+}
 func TestRunnerOrdinaryErrorReturnedUnmodifiedWhenSettleSucceeds(t *testing.T) {
 	execErr := errors.New("execute")
 	runner := Runner{Ledger: &recordingLedger{}, Core: coreFunc(func(context.Context, *RunState) error { return execErr })}

@@ -76,4 +76,7 @@ type TerminalOutcome struct {
 	ExternalState ExternalStateDisposition
 	Err           error
 	EndedAt       time.Time
+	// Feedback is consumer-supplied text intended for the next attempt,
+	// independent of Status. Empty is the common case.
+	Feedback string
 }

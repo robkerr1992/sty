@@ -15,6 +15,9 @@ func TestTerminalEnumZeroValuesAndStrings(t *testing.T) {
 	if ExternalStateDisposition(0) != DispositionUnknown {
 		t.Fatal("ExternalStateDisposition zero value is not DispositionUnknown")
 	}
+	if outcome := (TerminalOutcome{}); outcome.Feedback != "" {
+		t.Fatalf("TerminalOutcome{}.Feedback = %q, want empty", outcome.Feedback)
+	}
 	if got := TerminalStatus(9).String(); got != "TerminalStatus(9)" {
 		t.Fatalf("TerminalStatus(9).String() = %q", got)
 	}

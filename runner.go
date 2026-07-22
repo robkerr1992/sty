@@ -38,6 +38,31 @@ type Runner struct {
 
 const DefaultSettleTimeout = 30 * time.Second
 
+// ErrNotPullable is returned when BeginNext is used with a plain Ledger.
+var ErrNotPullable = errors.New("sty: ledger does not implement PullableLedger (no ClaimNext)")
+
+// RetryableError lets a Core wrap a failure with feedback intended for the
+// next run attempt. It does not affect terminal-status classification.
+//
+// Error and Unwrap are defined on *RetryableError. A non-pointer value does
+// not satisfy error and is invisible to retryFeedback; always construct it as
+// &RetryableError{...}.
+type RetryableError struct {
+	Feedback string
+	Err      error
+}
+
+func (e *RetryableError) Error() string { return e.Err.Error() }
+func (e *RetryableError) Unwrap() error { return e.Err }
+
+func retryFeedback(execErr error) string {
+	var retryable *RetryableError
+	if errors.As(execErr, &retryable) {
+		return retryable.Feedback
+	}
+	return ""
+}
+
 func (r *Runner) validatePlan() error {
 	r.planOnce.Do(func() { r.planErr = r.Plan.Validate() })
 	return r.planErr
@@ -56,6 +81,23 @@ func (r *Runner) Begin(ctx context.Context, key OperationKey, meta Metadata) (Cl
 	return claim, nil
 }
 
+// BeginNext validates the Plan once and claims the next pending operation from
+// a PullableLedger.
+func (r *Runner) BeginNext(ctx context.Context, meta Metadata) (Claim, error) {
+	if err := r.validatePlan(); err != nil {
+		return Claim{}, fmt.Errorf("sty: phase plan validation: %w", err)
+	}
+	pullable, ok := r.Ledger.(PullableLedger)
+	if !ok {
+		return Claim{}, fmt.Errorf("sty: begin next: %w", ErrNotPullable)
+	}
+	claim, err := pullable.ClaimNext(ctx, meta)
+	if err != nil {
+		return Claim{}, fmt.Errorf("sty: begin next: %w", err)
+	}
+	return claim, nil
+}
+
 // RunClaim executes and settles an already-obtained claim.
 func (r *Runner) RunClaim(ctx context.Context, claim Claim) (err error) {
 	var execErr error
@@ -69,6 +111,7 @@ func (r *Runner) RunClaim(ctx context.Context, claim Claim) (err error) {
 		} else {
 			outcome.Status, outcome.ExternalState = classifyOutcome(ctx, execErr)
 			outcome.Err = execErr
+			outcome.Feedback = retryFeedback(execErr)
 			err = execErr
 		}
 
